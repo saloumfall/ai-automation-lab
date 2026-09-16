@@ -1,87 +1,33 @@
-import "dotenv/config";
+import { classifySupportTicket } from "./llm";
+import {
+  RateLimitError,
+  TimeoutError,
+  APIError,
+} from "./errors";
 
-import type { SupportTicketSchema } from "./schemas";
+const message =
+  "Depuis ce matin je n'arrive plus à me connecter à mon compte.";
 
-const apiKey = process.env.OPENAI_API_KEY;
+try {
+  const ticket = await classifySupportTicket(message);
 
-if (!apiKey) {
-  throw new Error("OPENAI_API_KEY is missing");
+  console.log(ticket);
+
+  if (ticket.priority === "high") {
+    console.log("🚨 Escalade automatique");
+  }
+} catch (error) {
+  if (error instanceof RateLimitError) {
+    console.error("🛑 Trop de requêtes vers l'API");
+  } else if (error instanceof TimeoutError) {
+    console.error("⏱️ Le LLM n'a pas répondu à temps");
+  } else if (error instanceof APIError) {
+    console.error(
+      `❌ Erreur API OpenAI (${error.status})`
+    );
+  } else {
+    console.error("❌ Erreur inattendue", error);
+  }
+
+  process.exit(1);
 }
-
-const response = await fetch("https://api.openai.com/v1/responses", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`,
-  },
-  body: JSON.stringify({
-    model: "gpt-5-mini",
-    input: `
-Tu es un assistant de support informatique.
-
-Analyse le message suivant :
-
-"Depuis ce matin je n'arrive plus à me connecter à mon compte."
-
-Retourne uniquement les informations demandées.
-`,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "support_ticket",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            category: {
-              type: "string",
-              enum: [
-                "authentication",
-                "technical",
-                "billing",
-                "bug",
-                "other",
-              ],
-            },
-            priority: {
-              type: "string",
-              enum: ["low", "medium", "high"],
-            },
-            summary: {
-              type: "string",
-            },
-          },
-          required: ["category", "priority", "summary"],
-          additionalProperties: false,
-        },
-      },
-    },
-  }),
-});
-
-if (!response.ok) {
-  throw new Error(
-    `OpenAI API error: ${response.status} ${await response.text()}`
-  );
-}
-
-const data = await response.json();
-
-const text = data.output
-?.find((item: any)=> item.type === "message")
-?.content
-?.find((content:any)=> content.type ==="output_text")
-?.text;
-
-
-if(!text){
-  throw new Error("No output text returned");
-}
-const ticket: SupportTicket = JSON.parse(text);
-
-if(ticket.priority === "high"){
-      console.warn("🚨 Escalade automatique");
-}
-console.log(ticket.category);
-console.log(ticket.priority);
-console.log(ticket.summary);

@@ -1,6 +1,6 @@
 import {z} from "zod";
 
-export const SuppportTicketSchema = z.object({
+export const SupportTicketSchema = z.object({
     category:z.enum([
         "authentication",
         "technical",
@@ -12,4 +12,4 @@ export const SuppportTicketSchema = z.object({
     summary: z.string(),
 });
 
-export type SupportTicket = z.infer<typeof SuppportTicketSchema>;
+export type SupportTicket = z.infer<typeof SupportTicketSchema>;
