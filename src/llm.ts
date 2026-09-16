@@ -139,6 +139,8 @@ async function fetchWithRetry(
 }
 
 export async function classifySupportTicket(message: string) {
+  const startTime = Date.now();
+
   try {
     const response = await fetchWithRetry("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -200,6 +202,16 @@ Retourne uniquement les informations demandées.
     }
 
     const data = await response.json();
+
+    const latency = Date.now() - startTime;
+
+    console.log("📊 LLM request", {
+      model: data.model,
+      latencyMs: latency,
+      inputTokens: data.usage?.input_tokens,
+      outputTokens: data.usage?.output_tokens,
+      totalTokens: data.usage?.total_tokens,
+    });
 
     const text = data.output
       ?.find((item: any) => item.type === "message")
