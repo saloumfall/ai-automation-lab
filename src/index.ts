@@ -9,9 +9,11 @@ const message =
   "Depuis ce matin je n'arrive plus à me connecter à mon compte.";
 
 try {
-  const ticket = await classifySupportTicket(message);
+  const { result: ticket, usage } =
+  await classifySupportTicket(message);
 
   console.log(ticket);
+  console.log("📊 Usage:", usage);
 
   if (ticket.priority === "high") {
     console.log("🚨 Escalade automatique");

@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { SupportTicketSchema } from "./schemas";
+import { SupportTicketSchema, type SupportTicket } from "./schemas";
+import type { LLMResult, LLMUsage } from "./types";
 
 import {
   RateLimitError,
@@ -23,7 +24,9 @@ async function fetchWithRetry(
   options: RequestInit,
   maxRetries = 3,
   timeoutMs = 10_000
-): Promise<Response> {
+): Promise<{ response: Response; retries: number }> {
+  let retries = 0;
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
 
@@ -39,110 +42,123 @@ async function fetchWithRetry(
 
       clearTimeout(timeout);
 
-     if (!response.ok) {
-    if (response.status === 429) {
-      if (attempt === maxRetries) {
-        throw new RateLimitError(
-          "OpenAI rate limit exceeded after retries"
-        );
+      if (response.ok) {
+        return {
+          response,
+          retries,
+        };
       }
 
-      const retryAfter = response.headers.get("retry-after");
-
-      const baseDelay = retryAfter
-        ? Number(retryAfter) * 1000
-        : 2 ** attempt * 1000;
-
-      const jitter = Math.random() * 500;
-      const delay = baseDelay + jitter;
-
-      console.log(
-        `⚠️ Rate limit. Retry dans ${Math.round(delay)}ms...`
-      );
-
-      await sleep(delay);
-      continue;
-    }
-
-    if (response.status >= 500) {
-      if (attempt === maxRetries) {
-        throw new APIError(
-          `OpenAI server error: ${response.status}`,
-          response.status
-        );
-      }
-
-      const baseDelay = 2 ** attempt * 1000;
-      const jitter = Math.random() * 500;
-      const delay = baseDelay + jitter;
-
-      console.log(
-        `⚠️ Server error ${response.status}. Retry dans ${Math.round(delay)}ms...`
-      );
-
-      await sleep(delay);
-      continue;
-    }
-
-    // 400, 401, 403, 404...
-    throw new APIError(
-      `OpenAI API error: ${response.status}`,
-      response.status
-    );
-  }
-
-  
-
-      return response;
-    } catch (error) {
-        clearTimeout(timeout);
-
-        if (
-          error instanceof DOMException &&
-          error.name === "AbortError"
-        ) {
-          if (attempt === maxRetries) {
-            throw new TimeoutError(
-              `OpenAI request timed out after ${timeoutMs}ms`
-            );
-          }
-
-          const baseDelay = 2 ** attempt * 1000;
-          const jitter = Math.random() * 500;
-          const delay = baseDelay + jitter;
-
-          console.log(
-            `⏱️ Timeout. Retry dans ${Math.round(delay)}ms...`
+      if (response.status === 429) {
+        if (attempt === maxRetries) {
+          throw new RateLimitError(
+            "OpenAI rate limit exceeded after retries"
           );
-
-          await sleep(delay);
-          continue;
         }
 
+        const retryAfter = response.headers.get("retry-after");
+
+        const baseDelay = retryAfter
+          ? Number(retryAfter) * 1000
+          : 2 ** attempt * 1000;
+
+        const jitter = Math.random() * 500;
+        const delay = baseDelay + jitter;
+
+        retries++;
+
+        console.log(
+          `⚠️ Rate limit. Retry dans ${Math.round(delay)}ms...`
+        );
+
+        await sleep(delay);
+        continue;
+      }
+
+      if (response.status >= 500) {
         if (attempt === maxRetries) {
-          throw error;
+          throw new APIError(
+            `OpenAI server error: ${response.status}`,
+            response.status
+          );
         }
 
         const baseDelay = 2 ** attempt * 1000;
         const jitter = Math.random() * 500;
         const delay = baseDelay + jitter;
 
+        retries++;
+
         console.log(
-          `⚠️ Network error. Retry dans ${Math.round(delay)}ms...`
+          `⚠️ Server error ${response.status}. Retry dans ${Math.round(delay)}ms...`
         );
 
         await sleep(delay);
+        continue;
       }
+
+      throw new APIError(
+        `OpenAI API error: ${response.status}`,
+        response.status
+      );
+    } catch (error) {
+      clearTimeout(timeout);
+
+      // Ne pas retraiter nos propres erreurs métier/API
+      if (error instanceof APIError || error instanceof RateLimitError) {
+        throw error;
+      }
+
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        if (attempt === maxRetries) {
+          throw new TimeoutError(
+            `OpenAI request timed out after ${timeoutMs}ms`
+          );
+        }
+
+        const baseDelay = 2 ** attempt * 1000;
+        const jitter = Math.random() * 500;
+        const delay = baseDelay + jitter;
+
+        retries++;
+
+        console.log(
+          `⏱️ Timeout. Retry dans ${Math.round(delay)}ms...`
+        );
+
+        await sleep(delay);
+        continue;
+      }
+
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      const baseDelay = 2 ** attempt * 1000;
+      const jitter = Math.random() * 500;
+      const delay = baseDelay + jitter;
+
+      retries++;
+
+      console.log(
+        `⚠️ Network error. Retry dans ${Math.round(delay)}ms...`
+      );
+
+      await sleep(delay);
+    }
   }
 
   throw new Error("Retry limit exceeded");
 }
 
-export async function classifySupportTicket(message: string) {
+export async function classifySupportTicket(message: string) : Promise<LLMResult<SupportTicket>> {
   const startTime = Date.now();
 
   try {
-    const response = await fetchWithRetry("https://api.openai.com/v1/responses", {
+    const { response, retries }  = await fetchWithRetry("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -205,13 +221,15 @@ Retourne uniquement les informations demandées.
 
     const latency = Date.now() - startTime;
 
-    console.log("📊 LLM request", {
+    const usage: LLMUsage = {
       model: data.model,
       latencyMs: latency,
-      inputTokens: data.usage?.input_tokens,
-      outputTokens: data.usage?.output_tokens,
-      totalTokens: data.usage?.total_tokens,
-    });
+      inputTokens: data.usage?.input_tokens ?? 0,
+      outputTokens: data.usage?.output_tokens ?? 0,
+      totalTokens: data.usage?.total_tokens ?? 0,
+      retries,
+    };
+
 
     const text = data.output
       ?.find((item: any) => item.type === "message")
@@ -225,7 +243,11 @@ Retourne uniquement les informations demandées.
 
     const rawTicket = JSON.parse(text);
 
-    return SupportTicketSchema.parse(rawTicket);
+    const ticket =  SupportTicketSchema.parse(rawTicket);
+    return {
+      result: ticket,
+      usage,
+    }
   } catch (error) {
     console.error("❌ AI classification failed:", error);
 
